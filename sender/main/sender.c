@@ -31,17 +31,13 @@ static uint8_t receiverMAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x7C, 0x90};
 #define RADAR1_UART      UART_NUM_2
 #define RADAR1_RX_PIN    16
 #define RADAR1_TX_PIN    17
-#define RADAR1_TIME_MS   131
-#define RADAR1_XNEG      0
-#define RADAR1_XPOS      350
+#define RADAR1_TIME_MS   101  //131
 
 // Radar 2 (LEFT)
 #define RADAR2_UART      UART_NUM_1
 #define RADAR2_RX_PIN    41
 #define RADAR2_TX_PIN    42
-#define RADAR2_TIME_MS   101
-#define RADAR2_XNEG      -350
-#define RADAR2_XPOS      0
+#define RADAR2_TIME_MS   131  //101
 
 #define RADAR_ID_RIGHT   0x01
 #define RADAR_ID_LEFT    0x02
@@ -322,20 +318,17 @@ static void radar_at_config(void) {
     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
     
-    snprintf(cmdbuf, sizeof(cmdbuf), "AT+XNEGAD=%d\n", RADAR1_XNEG);
-    send_at_production(RADAR1_UART, cmdbuf, "OK", 2000);
-    snprintf(cmdbuf, sizeof(cmdbuf), "AT+XPOSID=%d\n", RADAR1_XPOS);
-    send_at_production(RADAR1_UART, cmdbuf, "OK", 2000);
+    // TRẢ VỀ CẤU HÌNH GỐC ĐỂ RADAR KHÔNG BÁO LỖI VÀ CHẠY ỔN ĐỊNH
+    send_at_production(RADAR1_UART, "AT+XNEGAD=0\n", "OK", 2000);
+    send_at_production(RADAR1_UART, "AT+XPOSID=350\n", "OK", 2000);
 
     send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
 
-    snprintf(cmdbuf, sizeof(cmdbuf), "AT+XNEGAD=%d\n", RADAR2_XNEG);
-    send_at_production(RADAR2_UART, cmdbuf, "OK", 2000);
-    snprintf(cmdbuf, sizeof(cmdbuf), "AT+XPOSID=%d\n", RADAR2_XPOS);
-    send_at_production(RADAR2_UART, cmdbuf, "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+XNEGAD=-350\n", "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+XPOSID=0\n", "OK", 2000);
 
     ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
     send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);  // không chờ

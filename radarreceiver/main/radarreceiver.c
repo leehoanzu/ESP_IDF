@@ -26,8 +26,11 @@ static const char *TAG = "RADAR_RX";
 #define MAC2STR(a) (a)[0],(a)[1],(a)[2],(a)[3],(a)[4],(a)[5]
 
 // ================= CONFIG =================
-#define RADAR_HALF_GAP_M     0.35f
-#define BOUNDARY_HYST_M      0.30f
+// Đặt 2 cục radar cách nhau bao xa? Ví dụ cách nhau 0.7m -> HALF_GAP là 0.35m
+#define RADAR_HALF_GAP_M           0.35f
+// Khoảng cách này được dùng để tạo "Phần lấn" ảo bằng phần mềm tại Receiver
+#define VIRTUAL_OVERLAP_M          0.30f
+#define BOUNDARY_HYST_M            0.30f
 
 #define RADAR_ID_RIGHT       0x01
 #define RADAR_ID_LEFT        0x02
@@ -58,13 +61,24 @@ static int     rxTotal[2] = {0};
 static uint64_t last_activity[2] = {0};
 
 // ================= TRACK MANAGER =================
+typedef enum {
+    TRACK_TENTATIVE = 0,
+    TRACK_CONFIRMED,
+    TRACK_TRANSFERRING
+} TrackState;
+
 typedef struct {
-    uint32_t id;
+    uint32_t id;             // Global ID cấp phát bởi ESP32
+    uint32_t internal_id;    // ID nội bộ từ giao thức Radar (chỉ 1 byte)
     uint8_t  owner_radar;
-    float    x_cal, y;
-    float    vx, vy;
+    float    x_cal, y, z;
+    float    vx, vy, vz;
     uint64_t last_seen;
     bool     active;
+    
+    // Thuật toán Boundary
+    TrackState state;
+    int        hit_count;
 } TrackedPerson;
 
 #define MAX_TRACKS 8
@@ -75,7 +89,17 @@ static uint64_t last_print_ms = 0;
 static bool     changed = false;        // dirty flag
 
 static float calibrate_x(float x_raw, uint8_t radar_id) {
-    return (radar_id == RADAR_ID_RIGHT) ? x_raw + RADAR_HALF_GAP_M : x_raw - RADAR_HALF_GAP_M;
+    // VIRTUAL OVERLAP SOFTWARE:
+    // Vì Cục Radar bị giới hạn phần cứng không cho quét sang nửa Âm (hoặc Dương),
+    // Nên ở đây ta dịch chuyển Tọa độ vật lý của Radar lấn sang vùng bên kia 1 đoạn VIRTUAL_OVERLAP_M
+    // R1 (Right): X vốn > 0. Dịch toàn bộ trục X sang trái thêm.
+    // R2 (Left) : X vốn < 0. Dịch toàn bộ trục X sang phải thêm.
+    
+    if (radar_id == RADAR_ID_RIGHT) {
+        return x_raw + (RADAR_HALF_GAP_M - VIRTUAL_OVERLAP_M);
+    } else {
+        return x_raw - (RADAR_HALF_GAP_M - VIRTUAL_OVERLAP_M);
+    }
 }
 
 static void track_reset(void) {
@@ -84,33 +108,86 @@ static void track_reset(void) {
     changed = true;
 }
 
-static TrackedPerson* find_or_create_track(uint32_t id, uint8_t radar_id) {
+static uint32_t next_global_id = 1;
+
+static TrackedPerson* match_or_create_track(uint32_t internal_id, uint8_t radar_id, float x_cal, float y, float z) {
+    // 1. Tìm chính xác theo ID nội bộ và Radar
     for (int i = 0; i < track_count; i++) {
-        if (tracks[i].active && tracks[i].id == id) {
+        if (tracks[i].active && tracks[i].internal_id == internal_id && tracks[i].owner_radar == radar_id) {
             return &tracks[i];
         }
     }
+
+    // 2. Lớp 3 - Confidence Weighting & Continuity Matching
+    // Nếu không tìm thấy, xem có Track nào cũ đang Transferring hoặc ở gần không (Khoảng cách < 0.4m) 
+    // để gộp chung thay vì tạo bóng ma (Ghosting)
+    for (int i = 0; i < track_count; i++) {
+        // Chỉ ghép nối với Radar ĐỐI DIỆN
+        if (tracks[i].active && tracks[i].owner_radar != radar_id) {
+            float dx = tracks[i].x_cal - x_cal;
+            float dy = tracks[i].y - y;
+            float dist = sqrtf(dx*dx + dy*dy);
+            
+            if (dist < 0.4f) { // Cùng 1 người nhưng radar kia mới phát hiện (siết ngưỡng xuống 40cm an toàn)
+                // Nếu track cũ đang Confirm và mình ở xa hơn, không làm gì cả (Chống nhiễu ghép)
+                if (tracks[i].state == TRACK_CONFIRMED) {
+                    // Cùng 1 người nhưng radar kia đang giữ, vào vùng trễ -> Chuyển state
+                    if (fabsf(tracks[i].x_cal) < BOUNDARY_HYST_M) {
+                        tracks[i].state = TRACK_TRANSFERRING;
+                    }
+                    return &tracks[i]; // Trả về track cũ để update
+                }
+                
+                // Thuộc quyền radar mới
+                tracks[i].owner_radar = radar_id;
+                tracks[i].internal_id = internal_id;
+                return &tracks[i];
+            }
+        }
+    }
+
+    // 3. Tạo mới nếu không match được ai
     if (track_count < MAX_TRACKS) {
         TrackedPerson *t = &tracks[track_count++];
-        t->id = id;
+        t->id = next_global_id++;
+        t->internal_id = internal_id;
         t->owner_radar = radar_id;
         t->active = true;
+        t->state = TRACK_TENTATIVE;
+        t->hit_count = 1;
         changed = true;
         return t;
     }
     return NULL;
 }
 
-static void update_track(TrackedPerson *t, float x_cal, float y, float vx, float vy) {
-    if (fabsf(t->x_cal - x_cal) > 0.05f || fabsf(t->y - y) > 0.05f ||
-        fabsf(t->vx - vx) > 0.02f || fabsf(t->vy - vy) > 0.02f) {
+static void update_track(TrackedPerson *t, float x_cal, float y, float z, float vx, float vy, float vz) {
+    if (fabsf(t->x_cal - x_cal) > 0.05f || fabsf(t->y - y) > 0.05f || fabsf(t->z - z) > 0.05f ||
+        fabsf(t->vx - vx) > 0.02f || fabsf(t->vy - vy) > 0.02f || fabsf(t->vz - vz) > 0.02f) {
         changed = true;
     }
     t->x_cal = x_cal;
     t->y = y;
+    t->z = z;
     t->vx = vx;
     t->vy = vy;
+    t->vz = vz;
     t->last_seen = esp_timer_get_time() / 1000;
+    
+    // Lớp 2 - Track Continuity Rule: Lên hạng sau >= 3 frames
+    if (t->state == TRACK_TENTATIVE) {
+        t->hit_count++;
+        if (t->hit_count >= 3) {
+            t->state = TRACK_CONFIRMED;
+            changed = true;
+        }
+    } else if (t->state == TRACK_TRANSFERRING) {
+        // Nếu đã rời khỏi vùng trễ +- 0.3m, chốt lại confirm
+        if (fabsf(x_cal) >= BOUNDARY_HYST_M) {
+            t->state = TRACK_CONFIRMED;
+            changed = true;
+        }
+    }
 }
 
 static void cleanup_old_tracks(void) {
@@ -139,18 +216,23 @@ static void parseRadarFrame(uint8_t *frame, int len, uint8_t radar_id) {
 
     for (uint32_t i = 0; i < count; i++) {
         int off = 32 + i * 32;
-        uint32_t id; float x_raw, y_raw, vx, vy;
-
-        memcpy(&id,    &frame[off + 0],  4);
+        
+        // Thực tế Radar ID chỉ nằm trong byte đầu tiên (từ 0-255). Các byte tiếp theo (off+1, off+2) chứa 
+        // Trạng thái (Move/Static) và Loại đối tượng (Type). Nếu đọc gộp 4 byte làm ID thì sẽ ra số khổng lồ
+        uint8_t internal_id = frame[off + 0];
+        
+        float x_raw, y_raw, z_raw, vx, vy, vz;
         memcpy(&x_raw, &frame[off + 8],  4);
         memcpy(&y_raw, &frame[off + 12], 4);
+        memcpy(&z_raw, &frame[off + 16], 4);
         memcpy(&vx,    &frame[off + 20], 4);
         memcpy(&vy,    &frame[off + 24], 4);
+        memcpy(&vz,    &frame[off + 28], 4);
 
         float x_cal = calibrate_x(x_raw, radar_id);
 
-        TrackedPerson *t = find_or_create_track(id, radar_id);
-        if (t) update_track(t, x_cal, y_raw, vx, vy);
+        TrackedPerson *t = match_or_create_track(internal_id, radar_id, x_cal, y_raw, z_raw);
+        if (t) update_track(t, x_cal, y_raw, z_raw, vx, vy, vz);
     }
 
     cleanup_old_tracks();
@@ -208,25 +290,31 @@ static void print_table(void) {
     if (!changed && (now - last_print_ms < 300)) return;
 
     printf("\033[H\033[J");
-    printf("=== DUAL RADAR TRACKING (change only) ===\n");
+    printf("=== DUAL RADAR TRACKING (State Machine) ===\n");
     printf("Tracks: %d\n", track_count);
-    printf("--------------------------------------------------\n");
-    printf("ID     Radar   X(m)    Y(m)    Vx     Vy\n");
-    printf("--------------------------------------------------\n");
+    printf("------------------------------------------------------------------------\n");
+    printf("ID     Radar   State    X(m)    Y(m)    Z(m)    Vx     Vy     Vz\n");
+    printf("------------------------------------------------------------------------\n");
 
     if (track_count == 0) {
-        printf("          --- No persons detected ---\n");
+        printf("              --- No persons detected ---\n");
     } else {
         for (int i = 0; i < track_count; i++) {
             if (!tracks[i].active) continue;
-            printf("%-6lu %-6s %7.2f %7.2f %6.2f %6.2f\n",
+            
+            const char* state_str = "TENT";
+            if (tracks[i].state == TRACK_CONFIRMED) state_str = "CONF";
+            else if (tracks[i].state == TRACK_TRANSFERRING) state_str = "TRANS";
+            
+            printf("%-6lu %-6s %-7s %7.2f %7.2f %7.2f %6.2f %6.2f %6.2f\n",
                    tracks[i].id,
                    tracks[i].owner_radar == RADAR_ID_RIGHT ? "RIGHT" : "LEFT",
-                   tracks[i].x_cal, tracks[i].y,
-                   tracks[i].vx, tracks[i].vy);
+                   state_str,
+                   tracks[i].x_cal, tracks[i].y, tracks[i].z,
+                   tracks[i].vx, tracks[i].vy, tracks[i].vz);
         }
     }
-    printf("--------------------------------------------------\n");
+    printf("------------------------------------------------------------------------\n");
 
     last_print_ms = now;
     changed = false;
