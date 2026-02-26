@@ -1,0 +1,2 @@
+source D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/sender/build/gdbinit/symbols
+source D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/sender/build/gdbinit/connect

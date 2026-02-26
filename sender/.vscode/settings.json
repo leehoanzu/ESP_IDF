@@ -1,0 +1,11 @@
+{
+    "idf.currentSetup": "C:\\Users\\lehoa\\esp\\v5.5.2\\esp-idf",
+    "idf.flashType": "UART",
+    "idf.portWin": "COM10",
+    "idf.openOcdConfigs": [
+        "board/esp32s3-builtin.cfg"
+    ],
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32s3"
+    }
+}
