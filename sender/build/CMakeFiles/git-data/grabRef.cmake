@@ -18,7 +18,7 @@ set(HEAD_HASH)
 file(READ "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/sender/build/CMakeFiles/git-data/HEAD" HEAD_CONTENTS LIMIT 1024)
 
 string(STRIP "${HEAD_CONTENTS}" HEAD_CONTENTS)
-set(GIT_DIR "C:/Users/lehoa/esp/v5.5.2/esp-idf/.git")
+set(GIT_DIR "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/.git")
 # handle git-worktree
 if(EXISTS "${GIT_DIR}/commondir")
 	file(READ "${GIT_DIR}/commondir" GIT_DIR_NEW LIMIT 1024)
