@@ -1,5 +1,3 @@
-
-
 /*
  * radarreceiver.c — Dual Radar Receiver PRODUCTION v3.1
  * Hoàn thiện: Chỉ in khi có thay đổi + tọa độ đầy đủ + sửa hết lỗi compile
@@ -69,7 +67,8 @@ typedef enum {
 
 typedef struct {
     uint32_t id;             // Global ID cấp phát bởi ESP32
-    uint32_t internal_id;    // ID nội bộ từ giao thức Radar (chỉ 1 byte)
+    uint32_t internal_id_right; // ID nội bộ từ radar Right (0xFFFFFFFF nếu trống)
+    uint32_t internal_id_left;  // ID nội bộ từ radar Left (0xFFFFFFFF nếu trống)
     uint8_t  owner_radar;
     float    x_cal, y, z;
     float    vx, vy, vz;
@@ -79,6 +78,7 @@ typedef struct {
     // Thuật toán Boundary
     TrackState state;
     int        hit_count;
+    int        transfer_hit_count; // Biến đếm Lớp 2 (Continuity)
 } TrackedPerson;
 
 #define MAX_TRACKS 8
@@ -111,79 +111,108 @@ static void track_reset(void) {
 static uint32_t next_global_id = 1;
 
 static TrackedPerson* match_or_create_track(uint32_t internal_id, uint8_t radar_id, float x_cal, float y, float z) {
-    // 1. Tìm chính xác theo ID nội bộ và Radar
+    // 1. Tìm chính xác theo ID nội bộ và Radar Owner (Trường hợp đã quen thuộc)
     for (int i = 0; i < track_count; i++) {
-        if (tracks[i].active && tracks[i].internal_id == internal_id && tracks[i].owner_radar == radar_id) {
-            return &tracks[i];
+        if (!tracks[i].active) continue;
+        uint32_t my_internal = (radar_id == RADAR_ID_RIGHT) ? tracks[i].internal_id_right : tracks[i].internal_id_left;
+        if (my_internal == internal_id) return &tracks[i];
+    }
+
+    // 2. Gộp ID ảo: Cùng 1 người nhưng radar kia mới phát hiện (Khoảng cách < 0.6m để gom)
+    for (int i = 0; i < track_count; i++) {
+        if (!tracks[i].active) continue;
+        
+        float dx = tracks[i].x_cal - x_cal;
+        float dy = tracks[i].y - y;
+        float dist = sqrtf(dx*dx + dy*dy);
+        
+        if (dist < 0.6f) {
+            // Cập nhật ID lại cho radar này để lần sau tìm ở (1) cho nhanh
+            if (radar_id == RADAR_ID_RIGHT) tracks[i].internal_id_right = internal_id;
+            else tracks[i].internal_id_left = internal_id;
+            return &tracks[i]; 
         }
     }
 
-    // 2. Lớp 3 - Confidence Weighting & Continuity Matching
-    // Nếu không tìm thấy, xem có Track nào cũ đang Transferring hoặc ở gần không (Khoảng cách < 0.4m) 
-    // để gộp chung thay vì tạo bóng ma (Ghosting)
-    for (int i = 0; i < track_count; i++) {
-        // Chỉ ghép nối với Radar ĐỐI DIỆN
-        if (tracks[i].active && tracks[i].owner_radar != radar_id) {
-            float dx = tracks[i].x_cal - x_cal;
-            float dy = tracks[i].y - y;
-            float dist = sqrtf(dx*dx + dy*dy);
-            
-            if (dist < 0.4f) { // Cùng 1 người nhưng radar kia mới phát hiện (siết ngưỡng xuống 40cm an toàn)
-                // Nếu track cũ đang Confirm và mình ở xa hơn, không làm gì cả (Chống nhiễu ghép)
-                if (tracks[i].state == TRACK_CONFIRMED) {
-                    // Cùng 1 người nhưng radar kia đang giữ, vào vùng trễ -> Chuyển state
-                    if (fabsf(tracks[i].x_cal) < BOUNDARY_HYST_M) {
-                        tracks[i].state = TRACK_TRANSFERRING;
-                    }
-                    return &tracks[i]; // Trả về track cũ để update
-                }
-                
-                // Thuộc quyền radar mới
-                tracks[i].owner_radar = radar_id;
-                tracks[i].internal_id = internal_id;
-                return &tracks[i];
-            }
-        }
-    }
-
-    // 3. Tạo mới nếu không match được ai
+    // 3. Tạo mới nếu không match được cụm nào
     if (track_count < MAX_TRACKS) {
         TrackedPerson *t = &tracks[track_count++];
         t->id = next_global_id++;
-        t->internal_id = internal_id;
+        t->internal_id_right = (radar_id == RADAR_ID_RIGHT) ? internal_id : 0xFFFFFFFF;
+        t->internal_id_left  = (radar_id == RADAR_ID_LEFT)  ? internal_id : 0xFFFFFFFF;
         t->owner_radar = radar_id;
         t->active = true;
         t->state = TRACK_TENTATIVE;
         t->hit_count = 1;
+        t->transfer_hit_count = 0;
+        
+        t->x_cal = x_cal; t->y = y; t->z = z;
+        t->vx = 0.0f; t->vy = 0.0f; t->vz = 0.0f;
+        t->last_seen = esp_timer_get_time() / 1000;
         changed = true;
         return t;
     }
     return NULL;
 }
 
-static void update_track(TrackedPerson *t, float x_cal, float y, float z, float vx, float vy, float vz) {
-    if (fabsf(t->x_cal - x_cal) > 0.05f || fabsf(t->y - y) > 0.05f || fabsf(t->z - z) > 0.05f ||
-        fabsf(t->vx - vx) > 0.02f || fabsf(t->vy - vy) > 0.02f || fabsf(t->vz - vz) > 0.02f) {
-        changed = true;
-    }
-    t->x_cal = x_cal;
-    t->y = y;
-    t->z = z;
-    t->vx = vx;
-    t->vy = vy;
-    t->vz = vz;
+static void update_track(TrackedPerson *t, float x_cal, float y, float z, float vx, float vy, float vz, uint8_t source_radar) {
     t->last_seen = esp_timer_get_time() / 1000;
     
-    // Lớp 2 - Track Continuity Rule: Lên hạng sau >= 3 frames
-    if (t->state == TRACK_TENTATIVE) {
+    // Lớp 1 - Hysteresis Boundary (Vùng trễ +-0.3m)
+    bool in_hysteresis = (x_cal >= -BOUNDARY_HYST_M && x_cal <= BOUNDARY_HYST_M);
+
+    if (t->owner_radar != source_radar) {
+        // --- RADAR KHÁC BÁO CÁO CÙNG 1 NGƯỜI ---
+        if (in_hysteresis) {
+            // Trong vùng trễ -> GIỮ NGUYÊN owner cũ, chỉ mark là Transferring
+            t->state = TRACK_TRANSFERRING;
+            t->transfer_hit_count = 0; 
+        } else {
+            // Ngoài vùng trễ, Lớp 3 - Confidence Weighting
+            // Tính toán khoảng cách tới tâm 2 con radar
+            float rx = (source_radar == RADAR_ID_RIGHT) ? RADAR_HALF_GAP_M : -RADAR_HALF_GAP_M;
+            float other_rx = (source_radar == RADAR_ID_RIGHT) ? -RADAR_HALF_GAP_M : RADAR_HALF_GAP_M;
+            
+            float dist_to_us = fabsf(x_cal - rx);
+            float dist_to_other = fabsf(x_cal - other_rx);
+            
+            if (dist_to_us < dist_to_other) {
+                // Đủ độ Confidence -> check Continuity (Lớp 2)
+                t->transfer_hit_count++;
+                if (t->transfer_hit_count >= 2) {
+                    // Liên tục >= 2 frame (~200ms) -> CHUYỂN QUYỀN Sở Hữu
+                    t->owner_radar = source_radar;
+                    t->state = TRACK_CONFIRMED;
+                    t->transfer_hit_count = 0;
+                    changed = true;
+                } else {
+                    t->state = TRACK_TRANSFERRING;
+                }
+            } else {
+                t->transfer_hit_count = 0; // Xa hơn -> không giành quyền
+            }
+        }
+        
+        // Trộn tọa độ êm (Low Pass Filter) để dữ liệu radar phụ không gây giật (jitter) tọa độ chính
+        t->x_cal = t->x_cal * 0.7f + x_cal * 0.3f;
+        t->y     = t->y     * 0.7f + y     * 0.3f;
+        
+    } else {
+        // --- CHÍNH CHỦ CẬP NHẬT TỌA ĐỘ ---
+        if (fabsf(t->x_cal - x_cal) > 0.05f || fabsf(t->y - y) > 0.05f) changed = true;
+        
+        t->x_cal = x_cal;
+        t->y = y;
+        t->z = z;
+        t->vx = vx; t->vy = vy; t->vz = vz;
+        
         t->hit_count++;
-        if (t->hit_count >= 3) {
+        if (t->state == TRACK_TENTATIVE && t->hit_count >= 2) {
             t->state = TRACK_CONFIRMED;
             changed = true;
         }
-    } else if (t->state == TRACK_TRANSFERRING) {
-        // Nếu đã rời khỏi vùng trễ +- 0.3m, chốt lại confirm
-        if (fabsf(x_cal) >= BOUNDARY_HYST_M) {
+        
+        if (t->state == TRACK_TRANSFERRING && !in_hysteresis) {
             t->state = TRACK_CONFIRMED;
             changed = true;
         }
@@ -232,7 +261,7 @@ static void parseRadarFrame(uint8_t *frame, int len, uint8_t radar_id) {
         float x_cal = calibrate_x(x_raw, radar_id);
 
         TrackedPerson *t = match_or_create_track(internal_id, radar_id, x_cal, y_raw, z_raw);
-        if (t) update_track(t, x_cal, y_raw, z_raw, vx, vy, vz);
+        if (t) update_track(t, x_cal, y_raw, z_raw, vx, vy, vz, radar_id);
     }
 
     cleanup_old_tracks();

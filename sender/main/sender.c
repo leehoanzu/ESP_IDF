@@ -1,7 +1,7 @@
 /*
- * sender.c — Dual Radar Sender PRODUCTION v4.0
- * Kiến trúc Phase Separation (Cấu hình trước, Đọc luồng sau),
- * Xả cạn (Drain) UART chống Ghost Stream, Anti-Binary Poisoning.
+ * sender.c — Dual Radar Sender PRODUCTION v4.2
+ * Fix: AT+START đặc biệt (không chờ OK, radar chuyển binary ngay)
+ * Phân vùng cứng + Study non-blocking + Drain mạnh
  */
 
 #include <stdio.h>
@@ -19,7 +19,7 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 
-static const char *TAG = "RADAR_TX_v4";
+static const char *TAG = "RADAR_TX_v4.2";
 
 static uint8_t receiverMAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x7C, 0x90};
 
@@ -27,39 +27,37 @@ static uint8_t receiverMAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x7C, 0x90};
 #define RADAR_BUF_SIZE       4096
 #define MAX_PAYLOAD          240
 
-// Radar 1 (RIGHT)
+// Radar 1 (RIGHT) - Phân vùng nửa phải
 #define RADAR1_UART      UART_NUM_2
 #define RADAR1_RX_PIN    16
 #define RADAR1_TX_PIN    17
-#define RADAR1_TIME_MS   101  //131
+#define RADAR1_TIME_MS   131
+#define RADAR1_XNEG      0
+#define RADAR1_XPOS      350
 
-// Radar 2 (LEFT)
+// Radar 2 (LEFT) - Phân vùng nửa trái
 #define RADAR2_UART      UART_NUM_1
 #define RADAR2_RX_PIN    41
 #define RADAR2_TX_PIN    42
-#define RADAR2_TIME_MS   131  //101
+#define RADAR2_TIME_MS   101
+#define RADAR2_XNEG      (-350)
+#define RADAR2_XPOS      0
 
 #define RADAR_ID_RIGHT   0x01
 #define RADAR_ID_LEFT    0x02
 
-// ================= BUFFERS =================
+// ================= BUFFERS & QUEUES (giữ nguyên) =================
 static uint8_t radarBuf1[RADAR_BUF_SIZE]; static int radarIdx1 = 0;
 static uint8_t radarBuf2[RADAR_BUF_SIZE]; static int radarIdx2 = 0;
 
-// ================= UART QUEUES =================
 static QueueHandle_t uart_queue1 = NULL;
 static QueueHandle_t uart_queue2 = NULL;
 
-// ================= THREAD-SAFE ESP-NOW =================
 static SemaphoreHandle_t espnow_mutex = NULL;
-static SemaphoreHandle_t frame_mutex = NULL;
-
-typedef struct {
-    uint8_t  data[250];
-    size_t   len;
-} TxPacket_t;
-
+typedef struct { uint8_t data[250]; size_t len; } TxPacket_t;
 static QueueHandle_t tx_queue = NULL;
+
+// ... (giữ nguyên espnow_tx_task, queue_espnow_send, crc16, sendRadarFrame, process_byte, radar1_task, radar2_task, uart_init_one, uart_init, wifi_init, espnow_init)
 
 static void espnow_tx_task(void *pvParameters) {
     TxPacket_t pkt;
@@ -104,7 +102,6 @@ static void sendRadarFrame(uint8_t *data, int len, uint8_t radar_id) {
     uint8_t seq = 0;
     uint8_t pkt[250];
 
-    xSemaphoreTake(frame_mutex, portMAX_DELAY);
     while (offset < len) {
         int chunk = (len - offset > MAX_PAYLOAD) ? MAX_PAYLOAD : (len - offset);
         bool is_last = (offset + chunk == len);
@@ -124,21 +121,18 @@ static void sendRadarFrame(uint8_t *data, int len, uint8_t radar_id) {
         offset += chunk;
         vTaskDelay(pdMS_TO_TICKS(2));
     }
-    xSemaphoreGive(frame_mutex);
 }
 
-// ================= ANTI-POISONING AT PARSER =================
-// Hàm xả cạn UART FIFO để tránh "Ghost Stream" (có timeout an toàn)
+// ================= ANTI-POISONING (cải tiến) =================
 static void drain_uart(uart_port_t port) {
     uint8_t dump[256];
     int len;
     do {
-        len = uart_read_bytes(port, dump, sizeof(dump), pdMS_TO_TICKS(100));
+        len = uart_read_bytes(port, dump, sizeof(dump), pdMS_TO_TICKS(50));
     } while (len > 0);
     uart_flush_input(port);
 }
 
-// Phân tích phản hồi AT an toàn ngay cả khi lẫn rác nhị phân
 static bool wait_at_response_safe(uart_port_t port, const char *expected, int timeout_ms) {
     char buf[512] = {0};
     int idx = 0;
@@ -147,35 +141,30 @@ static bool wait_at_response_safe(uart_port_t port, const char *expected, int ti
     while ((esp_timer_get_time() / 1000ULL - start) < (uint64_t)timeout_ms) {
         uint8_t b;
         if (uart_read_bytes(port, &b, 1, pdMS_TO_TICKS(10)) > 0) {
-            char c = (b == 0 || b > 127) ? '?' : (char)b;
-            buf[idx++] = c;
+            if (idx < 511) buf[idx++] = (b < 32 || b > 126) ? '?' : (char)b;
             buf[idx] = '\0';
-            
-            if (idx >= 500) {
-                memmove(buf, buf + 250, 250);
-                idx = 250;
-                buf[idx] = '\0';
-            }
 
             if (strstr(buf, expected) || strstr(buf, "AT+OK") || strstr(buf, "OK")) {
                 ESP_LOGI(TAG, "   ✓ Received: OK");
                 return true;
             }
-            // Bắt ngay lập tức các mã lỗi của radar để không bị dính Timeout
-            if (strstr(buf, "ERROR") || strstr(buf, "AT+ERR") || strstr(buf, "Save Para Fail")) {
-                ESP_LOGE(TAG, "   ✗ Radar Rejected! Log: %s", buf);
+            if (strstr(buf, "ERROR") || strstr(buf, "AT+ERR")) {
+                ESP_LOGE(TAG, "   ✗ ERROR: %s", buf);
                 return false;
+            }
+            // Phát hiện binary header → START thành công, chuyển mode
+            if (buf[0]=='?' && buf[1]=='?' && buf[2]=='?' && buf[3]=='?') {  // bắt đầu binary
+                ESP_LOGI(TAG, "   ✓ Binary mode detected after START");
+                return true;
             }
         }
     }
-    ESP_LOGW(TAG, "   ✗ TIMEOUT! Log: %s", buf);
+    ESP_LOGW(TAG, "   ✗ TIMEOUT! Last: %s", buf);
     return false;
 }
 
 static void send_at_production(uart_port_t port, const char *cmd, const char *wait_keyword, int timeout_ms) {
-    // [QUAN TRỌNG] Quét sạch dội âm của lệnh cũ trước khi gửi lệnh mới
-    uart_flush_input(port); 
-    
+    uart_flush_input(port);
     uart_write_bytes(port, cmd, strlen(cmd));
     ESP_LOGI(TAG, "→ %s", cmd);
 
@@ -185,6 +174,7 @@ static void send_at_production(uart_port_t port, const char *cmd, const char *wa
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }
+
 
 // ================= PROCESS BYTE =================
 static int process_byte(uint8_t byte, uint8_t *buf, int *idx, uart_port_t port, uint8_t radar_id) {
@@ -213,7 +203,7 @@ static int process_byte(uint8_t byte, uint8_t *buf, int *idx, uart_port_t port, 
 
     if (*idx < (int)pktLen) return 0;
 
-    // Bật log để quan sát dễ dàng quá trình gửi frame
+    // Chỉ bật log khi cần debug sâu để tránh nghẽn
     ESP_LOGI(TAG, "[%s FRAME FULL] size=%lu bytes", (radar_id == RADAR_ID_RIGHT ? "RIGHT" : "LEFT"), pktLen);
 
     sendRadarFrame(buf, (int)pktLen, radar_id);
@@ -234,10 +224,18 @@ static void radar1_task(void *pv) {
             queue_espnow_send(ping, 5);
         }
 
-        uint8_t tmp[256];
-        int rd = uart_read_bytes(RADAR1_UART, tmp, sizeof(tmp), pdMS_TO_TICKS(10));
-        for (int i = 0; i < rd; i++) {
-            process_byte(tmp[i], radarBuf1, &radarIdx1, RADAR1_UART, RADAR_ID_RIGHT);
+        uart_event_t event;
+        if (xQueueReceive(uart_queue1, &event, pdMS_TO_TICKS(10))) {
+            if (event.type == UART_DATA) {
+                uint8_t tmp[256];
+                size_t sz = event.size > 256 ? 256 : event.size;
+                int rd = uart_read_bytes(RADAR1_UART, tmp, sz, 0);
+                for (int i = 0; i < rd; i++) {
+                    process_byte(tmp[i], radarBuf1, &radarIdx1, RADAR1_UART, RADAR_ID_RIGHT);
+                }
+            } else if (event.type == UART_FIFO_OVF || event.type == UART_BUFFER_FULL) {
+                uart_flush_input(RADAR1_UART);
+            }
         }
     }
 }
@@ -252,16 +250,24 @@ static void radar2_task(void *pv) {
             queue_espnow_send(ping, 5);
         }
 
-        uint8_t tmp[256];
-        int rd = uart_read_bytes(RADAR2_UART, tmp, sizeof(tmp), pdMS_TO_TICKS(10));
-        for (int i = 0; i < rd; i++) {
-            process_byte(tmp[i], radarBuf2, &radarIdx2, RADAR2_UART, RADAR_ID_LEFT);
+        uart_event_t event;
+        if (xQueueReceive(uart_queue2, &event, pdMS_TO_TICKS(10))) {
+            if (event.type == UART_DATA) {
+                uint8_t tmp[256];
+                size_t sz = event.size > 256 ? 256 : event.size;
+                int rd = uart_read_bytes(RADAR2_UART, tmp, sz, 0);
+                for (int i = 0; i < rd; i++) {
+                    process_byte(tmp[i], radarBuf2, &radarIdx2, RADAR2_UART, RADAR_ID_LEFT);
+                }
+            } else if (event.type == UART_FIFO_OVF || event.type == UART_BUFFER_FULL) {
+                uart_flush_input(RADAR2_UART);
+            }
         }
     }
 }
 
 // ================= UART INIT =================
-static void uart_init_one(uart_port_t port, int tx, int rx) {
+static void uart_init_one(uart_port_t port, int tx, int rx, QueueHandle_t *queue) {
     uart_config_t cfg = {
         .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
@@ -269,14 +275,14 @@ static void uart_init_one(uart_port_t port, int tx, int rx) {
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
     };
-    uart_driver_install(port, 4096, 4096, 0, NULL, 0);
+    uart_driver_install(port, 4096, 4096, 20, queue, 0);
     uart_param_config(port, &cfg);
     uart_set_pin(port, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
 static void uart_init(void) {
-    uart_init_one(RADAR1_UART, RADAR1_TX_PIN, RADAR1_RX_PIN);
-    uart_init_one(RADAR2_UART, RADAR2_TX_PIN, RADAR2_RX_PIN);
+    uart_init_one(RADAR1_UART, RADAR1_TX_PIN, RADAR1_RX_PIN, &uart_queue1);
+    uart_init_one(RADAR2_UART, RADAR2_TX_PIN, RADAR2_RX_PIN, &uart_queue2);
 }
 
 // ================= WIFI & ESP-NOW INIT =================
@@ -296,29 +302,22 @@ static void espnow_init(void) {
     esp_now_add_peer(&peer);
 
     espnow_mutex = xSemaphoreCreateMutex();
-    frame_mutex = xSemaphoreCreateMutex();
     tx_queue = xQueueCreate(32, sizeof(TxPacket_t));
 }
 
-// ================= PRODUCTION CONFIG =================
+// ================= PRODUCTION CONFIG (v4.2) =================
 static void radar_at_config(void) {
-    char cmdbuf[64];
-
     ESP_LOGI(TAG, "=== PHASE 1: STOP & DRAIN ===");
-    send_at_production(RADAR1_UART, "AT+STOP\n", NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(500));
-    send_at_production(RADAR2_UART, "AT+STOP\n", NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(500));
+    send_at_production(RADAR1_UART, "AT+STOP\n", "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+STOP\n", "OK", 2000);
     drain_uart(RADAR1_UART);
     drain_uart(RADAR2_UART);
 
-    ESP_LOGI(TAG, "=== PHASE 2: CONFIG PARTITION & PARAMS ===");
+    ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG ===");
     send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
-    
-    // TRẢ VỀ CẤU HÌNH GỐC ĐỂ RADAR KHÔNG BÁO LỖI VÀ CHẠY ỔN ĐỊNH
     send_at_production(RADAR1_UART, "AT+XNEGAD=0\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+XPOSID=350\n", "OK", 2000);
 
@@ -326,26 +325,25 @@ static void radar_at_config(void) {
     send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
-
     send_at_production(RADAR2_UART, "AT+XNEGAD=-350\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+XPOSID=0\n", "OK", 2000);
 
     ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
-    send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);  // không chờ
+    send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);
     send_at_production(RADAR2_UART, "AT+STUDY\n", NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(8000));   // chỉ chờ 8s khởi động study
+    vTaskDelay(pdMS_TO_TICKS(8000));   // chỉ chờ khởi động study
 
-    ESP_LOGI(TAG, "=== PHASE 4: START ===");
-    // Tương tự, nếu lệnh START có spam binary ngay lập tức, ta không chờ OK mà cứ gửi rồi xả buffer.
-    send_at_production(RADAR1_UART, "AT+START\n", NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(1000)); // Đợi radar khởi động phát binary
-    send_at_production(RADAR2_UART, "AT+START\n", NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(1000));
+    ESP_LOGI(TAG, "=== PHASE 4: START (binary mode) ===");
+    // START đặc biệt: KHÔNG chờ OK, radar sẽ chuyển binary ngay
+    uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
+    uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
+    vTaskDelay(pdMS_TO_TICKS(300));
+    drain_uart(RADAR1_UART);
+    drain_uart(RADAR2_UART);
 
-    // drain_uart(RADAR1_UART);
-    // drain_uart(RADAR2_UART);
-    ESP_LOGI(TAG, "=== CONFIG DONE - Radars now in partition mode ===");
+    ESP_LOGI(TAG, "=== CONFIG DONE - Both radars in PARTITION MODE ===");
 }
+
 // ================= MAIN =================
 void app_main(void) {
     nvs_flash_init();
@@ -353,18 +351,17 @@ void app_main(void) {
     uart_init();
     espnow_init();
 
-    ESP_LOGI(TAG, "=== DUAL-RADAR SENDER v4.1 STARTED ===");
+    ESP_LOGI(TAG, "=== DUAL-RADAR SENDER PRODUCTION v4.2 STARTED ===");
 
-    // 0. Khởi tạo tx task trước để queue hoạt động
-    xTaskCreate(espnow_tx_task, "espnow_tx", 4096, NULL, 7, NULL);
-
-    // 1. CẤU HÌNH AT TRƯỚC! (Rất quan trọng)
-    // Nếu chạy Parser trước, nó sẽ khóa UART và đọc mất các phản hồi "OK" của Radar
-    radar_at_config();
-
-    // 2. Khởi động parser SAU khi config xong, bắt đầu đọc dữ liệu Radar liên tục
+    // 1. Parser chạy TRƯỚC
     xTaskCreate(radar1_task, "radar1", 4096, NULL, 6, NULL);
     xTaskCreate(radar2_task, "radar2", 4096, NULL, 6, NULL);
+    xTaskCreate(espnow_tx_task, "espnow_tx", 4096, NULL, 7, NULL);
+
+    vTaskDelay(pdMS_TO_TICKS(800));
+
+    // 2. Config sau khi parser sẵn sàng
+    radar_at_config();
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 }

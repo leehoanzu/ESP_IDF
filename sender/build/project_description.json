@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "sender",
-    "project_version":    "b8a0c4a-dirty",
+    "project_version":    "d269462-dirty",
     "project_path":       "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/sender",
     "idf_path":           "C:/Users/lehoa/esp/v5.5.2/esp-idf",
     "build_dir":          "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/sender/build",
