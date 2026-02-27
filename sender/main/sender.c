@@ -19,6 +19,8 @@
 #include "esp_timer.h"
 #include "esp_log.h"
 
+#include "driver/gpio.h"          // ← THÊM DÒNG NÀY
+
 static const char *TAG = "RADAR_TX_v4.2";
 
 static uint8_t receiverMAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x7C, 0x90};
@@ -26,6 +28,10 @@ static uint8_t receiverMAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x7C, 0x90};
 #define RADAR_HALF_GAP_CM    35
 #define RADAR_BUF_SIZE       4096
 #define MAX_PAYLOAD          240
+
+// ================= HARD RESET PINS (bạn đã nối) =================
+#define RADAR1_RESET_GPIO    37   // RIGHT
+#define RADAR2_RESET_GPIO    36   // LEFT
 
 // Radar 1 (RIGHT) - Phân vùng nửa phải
 #define RADAR1_UART      UART_NUM_2
@@ -123,6 +129,15 @@ static void sendRadarFrame(uint8_t *data, int len, uint8_t radar_id) {
     }
 }
 
+// ================= HARD RESET FUNCTION =================
+static void hard_reset_radar(int gpio_num) {
+    gpio_set_level(gpio_num, 0);        // kéo thấp reset
+    vTaskDelay(pdMS_TO_TICKS(200));
+    gpio_set_level(gpio_num, 1);        // thả cao
+    ESP_LOGI(TAG, "   HARD RESET GPIO%d → DONE", gpio_num);
+    vTaskDelay(pdMS_TO_TICKS(1200));    // chờ module boot sạch (quan trọng!)
+}
+
 // ================= ANTI-POISONING (cải tiến) =================
 static void drain_uart(uart_port_t port) {
     uint8_t dump[256];
@@ -131,6 +146,7 @@ static void drain_uart(uart_port_t port) {
         len = uart_read_bytes(port, dump, sizeof(dump), pdMS_TO_TICKS(50));
     } while (len > 0);
     uart_flush_input(port);
+    ESP_LOGI(TAG, "   Flush uart successfully");
 }
 
 static bool wait_at_response_safe(uart_port_t port, const char *expected, int timeout_ms) {
@@ -364,38 +380,74 @@ static void espnow_init(void) {
 //     ESP_LOGI(TAG, "=== CONFIG DONE - Both radars in PARTITION MODE ===");
 // }
 
+// static void radar_at_config(void) {
+//     ESP_LOGI(TAG, "=== PHASE 1: STOP & DRAIN ===");
+//     send_at_production(RADAR1_UART, "AT+STOP\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+STOP\n", "OK", 2000);
+//     drain_uart(RADAR1_UART);
+//     drain_uart(RADAR2_UART);
+
+//     ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG (FIXED for MS72SF1) ===");
+//     // RIGHT
+//     send_at_production(RADAR1_UART, "AT+XNegaD=0\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);  //131
+//     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
+
+//     // LEFT
+//     send_at_production(RADAR2_UART, "AT+XNegaD=-300\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+XPosiD=0\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
+
+//     ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
+//     send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);
+//     send_at_production(RADAR2_UART, "AT+STUDY\n", NULL, 0);
+//     vTaskDelay(pdMS_TO_TICKS(8000));
+
+//     ESP_LOGI(TAG, "=== CONFIG DONE - TDM will start both radars alternately ===");
+// }
+
+// ================= PRODUCTION CONFIG v4.3 =================
 static void radar_at_config(void) {
+    ESP_LOGI(TAG, "=== PHASE 0: HARD RESET BOTH RADARS ===");
+    hard_reset_radar(RADAR1_RESET_GPIO);
+    hard_reset_radar(RADAR2_RESET_GPIO);
+
     ESP_LOGI(TAG, "=== PHASE 1: STOP & DRAIN ===");
     send_at_production(RADAR1_UART, "AT+STOP\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+STOP\n", "OK", 2000);
     drain_uart(RADAR1_UART);
     drain_uart(RADAR2_UART);
 
-    ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG (FIXED for MS72SF1) ===");
+    ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG (MS72SF1) ===");
     // RIGHT
-    send_at_production(RADAR1_UART, "AT+XNegaD=0\n", "OK", 2000);
+    send_at_production(RADAR1_UART, "AT+XNegaD=0\n",   "OK", 2000);
     send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+TIME=101\n", "OK", 2000);  //131
+    send_at_production(RADAR1_UART, "AT+TIME=131\n",   "OK", 2000);
     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
+    send_at_production(RADAR1_UART, "AT+RANGE=350\n",  "OK", 2000);
+    send_at_production(RADAR1_UART, "AT+SENS=8\n",     "OK", 2000);
 
     // LEFT
     send_at_production(RADAR2_UART, "AT+XNegaD=-300\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+XPosiD=0\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+XPosiD=0\n",    "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+TIME=101\n",    "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+HEIGHT=100\n",  "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+RANGE=350\n",   "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+SENS=8\n",      "OK", 2000);
 
-    ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
+    ESP_LOGI(TAG, "=== PHASE 3: STUDY ===");
     send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);
     send_at_production(RADAR2_UART, "AT+STUDY\n", NULL, 0);
     vTaskDelay(pdMS_TO_TICKS(8000));
 
-    ESP_LOGI(TAG, "=== CONFIG DONE - TDM will start both radars alternately ===");
+    ESP_LOGI(TAG, "=== CONFIG DONE - TDM will control START/STOP ===");
 }
-
 
 // ================= TDM SWITCH TASK (NEW) =================
 static void radar_tdm_task(void *pv) {
@@ -426,26 +478,34 @@ static void radar_tdm_task(void *pv) {
     }
 }
 
-// ================= MAIN =================
+// ================= MAIN - QUAN TRỌNG NHẤT =================
 void app_main(void) {
     nvs_flash_init();
     wifi_init();
     uart_init();
     espnow_init();
 
-    ESP_LOGI(TAG, "=== DUAL-RADAR SENDER PRODUCTION v4.2 STARTED ===");
+    // ================= INIT HARD RESET PINS =================
+    gpio_config_t io_conf = {
+        .intr_type = GPIO_INTR_DISABLE,
+        .mode = GPIO_MODE_OUTPUT,
+        .pin_bit_mask = (1ULL<<RADAR1_RESET_GPIO) | (1ULL<<RADAR2_RESET_GPIO),
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_up_en = GPIO_PULLUP_DISABLE
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(RADAR1_RESET_GPIO, 1);
+    gpio_set_level(RADAR2_RESET_GPIO, 1);
 
-    // 1. Parser chạy TRƯỚC
+    ESP_LOGI(TAG, "=== DUAL-RADAR SENDER PRODUCTION v4.3 + HARD RESET + CLEAN BOOT ===");
+
+    // 1. CONFIG TRƯỚC (quan trọng nhất - không để parser chạy trước)
+    radar_at_config();
+
+    // 2. Bây giờ mới bật parser + TDM
     xTaskCreate(radar1_task, "radar1", 4096, NULL, 6, NULL);
     xTaskCreate(radar2_task, "radar2", 4096, NULL, 6, NULL);
     xTaskCreate(espnow_tx_task, "espnow_tx", 4096, NULL, 7, NULL);
-
-    vTaskDelay(pdMS_TO_TICKS(800));
-
-    // 2. Config sau khi parser sẵn sàng
-    radar_at_config();
-
-    // KHỞI ĐỘNG TDM
     xTaskCreate(radar_tdm_task, "tdm_switch", 4096, NULL, 5, NULL);
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
