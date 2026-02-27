@@ -313,20 +313,40 @@ static void radar_at_config(void) {
     drain_uart(RADAR1_UART);
     drain_uart(RADAR2_UART);
 
-    ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG ===");
+    // ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG ===");
+    // send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
+    // send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
+    // send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
+    // send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
+    // send_at_production(RADAR1_UART, "AT+XNEGAD=0\n", "OK", 2000);
+    // send_at_production(RADAR1_UART, "AT+XPOSID=350\n", "OK", 2000);
+
+    // send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
+    // send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
+    // send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
+    // send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
+    // send_at_production(RADAR2_UART, "AT+XNEGAD=-350\n", "OK", 2000);
+    // send_at_production(RADAR2_UART, "AT+XPOSID=0\n", "OK", 2000);
+    ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG (FIXED for MS72SF1) ===");
+
+    // Radar 1 RIGHT - chỉ báo cáo nửa phải (X >= 0)
+    send_at_production(RADAR1_UART, "AT+XNegaD=0\n", "OK", 2000);
+    send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);   // max 300cm theo datasheet
+
+    // Radar 2 LEFT - chỉ báo cáo nửa trái (X <= 0)
+    send_at_production(RADAR2_UART, "AT+XNegaD=-300\n", "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+XPosiD=0\n", "OK", 2000);
+
+    // Các lệnh khác giữ nguyên
     send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+XNEGAD=0\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+XPOSID=350\n", "OK", 2000);
 
     send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+XNEGAD=-350\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+XPOSID=0\n", "OK", 2000);
 
     ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
     send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);
