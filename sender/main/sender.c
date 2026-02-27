@@ -306,6 +306,64 @@ static void espnow_init(void) {
 }
 
 // ================= PRODUCTION CONFIG (v4.2) =================
+// static void radar_at_config(void) {
+//     ESP_LOGI(TAG, "=== PHASE 1: STOP & DRAIN ===");
+//     send_at_production(RADAR1_UART, "AT+STOP\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+STOP\n", "OK", 2000);
+//     drain_uart(RADAR1_UART);
+//     drain_uart(RADAR2_UART);
+
+//     // ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG ===");
+//     // send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
+//     // send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
+//     // send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
+//     // send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
+//     // send_at_production(RADAR1_UART, "AT+XNEGAD=0\n", "OK", 2000);
+//     // send_at_production(RADAR1_UART, "AT+XPOSID=350\n", "OK", 2000);
+
+//     // send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
+//     // send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
+//     // send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
+//     // send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
+//     // send_at_production(RADAR2_UART, "AT+XNEGAD=-350\n", "OK", 2000);
+//     // send_at_production(RADAR2_UART, "AT+XPOSID=0\n", "OK", 2000);
+//     ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG (FIXED for MS72SF1) ===");
+
+//     // Radar 1 RIGHT - chỉ báo cáo nửa phải (X >= 0)
+//     send_at_production(RADAR1_UART, "AT+XNegaD=0\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);   // max 300cm theo datasheet
+
+//     // Radar 2 LEFT - chỉ báo cáo nửa trái (X <= 0)
+//     send_at_production(RADAR2_UART, "AT+XNegaD=-300\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+XPosiD=0\n", "OK", 2000);
+
+//     // Các lệnh khác giữ nguyên
+//     send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
+//     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
+
+//     send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
+//     send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
+
+//     ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
+//     send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);
+//     send_at_production(RADAR2_UART, "AT+STUDY\n", NULL, 0);
+//     vTaskDelay(pdMS_TO_TICKS(8000));   // chỉ chờ khởi động study
+
+//     ESP_LOGI(TAG, "=== PHASE 4: START (binary mode) ===");
+//     // START đặc biệt: KHÔNG chờ OK, radar sẽ chuyển binary ngay
+//     uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
+//     uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
+//     vTaskDelay(pdMS_TO_TICKS(300));
+//     drain_uart(RADAR1_UART);
+//     drain_uart(RADAR2_UART);
+
+//     ESP_LOGI(TAG, "=== CONFIG DONE - Both radars in PARTITION MODE ===");
+// }
+
 static void radar_at_config(void) {
     ESP_LOGI(TAG, "=== PHASE 1: STOP & DRAIN ===");
     send_at_production(RADAR1_UART, "AT+STOP\n", "OK", 2000);
@@ -313,36 +371,18 @@ static void radar_at_config(void) {
     drain_uart(RADAR1_UART);
     drain_uart(RADAR2_UART);
 
-    // ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG ===");
-    // send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
-    // send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
-    // send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
-    // send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
-    // send_at_production(RADAR1_UART, "AT+XNEGAD=0\n", "OK", 2000);
-    // send_at_production(RADAR1_UART, "AT+XPOSID=350\n", "OK", 2000);
-
-    // send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
-    // send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
-    // send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
-    // send_at_production(RADAR2_UART, "AT+SENS=8\n", "OK", 2000);
-    // send_at_production(RADAR2_UART, "AT+XNEGAD=-350\n", "OK", 2000);
-    // send_at_production(RADAR2_UART, "AT+XPOSID=0\n", "OK", 2000);
     ESP_LOGI(TAG, "=== PHASE 2: PARTITION CONFIG (FIXED for MS72SF1) ===");
-
-    // Radar 1 RIGHT - chỉ báo cáo nửa phải (X >= 0)
+    // RIGHT
     send_at_production(RADAR1_UART, "AT+XNegaD=0\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);   // max 300cm theo datasheet
-
-    // Radar 2 LEFT - chỉ báo cáo nửa trái (X <= 0)
-    send_at_production(RADAR2_UART, "AT+XNegaD=-300\n", "OK", 2000);
-    send_at_production(RADAR2_UART, "AT+XPosiD=0\n", "OK", 2000);
-
-    // Các lệnh khác giữ nguyên
+    send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
 
+    // LEFT
+    send_at_production(RADAR2_UART, "AT+XNegaD=-300\n", "OK", 2000);
+    send_at_production(RADAR2_UART, "AT+XPosiD=0\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+TIME=101\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR2_UART, "AT+RANGE=350\n", "OK", 2000);
@@ -351,17 +391,39 @@ static void radar_at_config(void) {
     ESP_LOGI(TAG, "=== PHASE 3: STUDY (non-blocking) ===");
     send_at_production(RADAR1_UART, "AT+STUDY\n", NULL, 0);
     send_at_production(RADAR2_UART, "AT+STUDY\n", NULL, 0);
-    vTaskDelay(pdMS_TO_TICKS(8000));   // chỉ chờ khởi động study
+    vTaskDelay(pdMS_TO_TICKS(8000));
 
-    ESP_LOGI(TAG, "=== PHASE 4: START (binary mode) ===");
-    // START đặc biệt: KHÔNG chờ OK, radar sẽ chuyển binary ngay
-    uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
-    uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
-    vTaskDelay(pdMS_TO_TICKS(300));
-    drain_uart(RADAR1_UART);
-    drain_uart(RADAR2_UART);
+    ESP_LOGI(TAG, "=== CONFIG DONE - TDM will start both radars alternately ===");
+}
 
-    ESP_LOGI(TAG, "=== CONFIG DONE - Both radars in PARTITION MODE ===");
+
+// ================= TDM SWITCH TASK (NEW) =================
+static void radar_tdm_task(void *pv) {
+    ESP_LOGI(TAG, "=== TDM MODE STARTED: Alternate RIGHT/LEFT every 800ms ===");
+
+    while (1) {
+        // --- BẬT RIGHT ---
+        uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
+        ESP_LOGI(TAG, "→ TDM: START RIGHT");
+        vTaskDelay(pdMS_TO_TICKS(800));           // RIGHT hoạt động 800ms
+
+        // --- TẮT RIGHT ---
+        uart_write_bytes(RADAR1_UART, "AT+STOP\n", 8);
+        drain_uart(RADAR1_UART);
+        ESP_LOGI(TAG, "→ TDM: STOP RIGHT");
+        vTaskDelay(pdMS_TO_TICKS(50));
+
+        // --- BẬT LEFT ---
+        uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
+        ESP_LOGI(TAG, "→ TDM: START LEFT");
+        vTaskDelay(pdMS_TO_TICKS(800));           // LEFT hoạt động 800ms
+
+        // --- TẮT LEFT ---
+        uart_write_bytes(RADAR2_UART, "AT+STOP\n", 8);
+        drain_uart(RADAR2_UART);
+        ESP_LOGI(TAG, "→ TDM: STOP LEFT");
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
 }
 
 // ================= MAIN =================
@@ -382,6 +444,9 @@ void app_main(void) {
 
     // 2. Config sau khi parser sẵn sàng
     radar_at_config();
+
+    // KHỞI ĐỘNG TDM
+    xTaskCreate(radar_tdm_task, "tdm_switch", 4096, NULL, 5, NULL);
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 }
