@@ -375,7 +375,7 @@ static void radar_at_config(void) {
     // RIGHT
     send_at_production(RADAR1_UART, "AT+XNegaD=0\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+XPosiD=300\n", "OK", 2000);
-    send_at_production(RADAR1_UART, "AT+TIME=131\n", "OK", 2000);
+    send_at_production(RADAR1_UART, "AT+TIME=101\n", "OK", 2000);  //131
     send_at_production(RADAR1_UART, "AT+HEIGHT=100\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+RANGE=350\n", "OK", 2000);
     send_at_production(RADAR1_UART, "AT+SENS=8\n", "OK", 2000);
