@@ -222,7 +222,7 @@ static void update_track(TrackedPerson *t, float x_cal, float y, float z, float 
 static void cleanup_old_tracks(void) {
     uint64_t now = esp_timer_get_time() / 1000;
     for (int i = 0; i < track_count; i++) {
-        if (tracks[i].active && (now - tracks[i].last_seen > 2000)) {
+        if (tracks[i].active && (now - tracks[i].last_seen > 1200)) {
             tracks[i].active = false;
             changed = true;
             tracks[i] = tracks[track_count - 1];
