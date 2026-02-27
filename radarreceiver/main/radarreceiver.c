@@ -25,7 +25,7 @@ static const char *TAG = "RADAR_RX";
 
 // ================= CONFIG =================
 // Đặt 2 cục radar cách nhau bao xa? Ví dụ cách nhau 0.7m -> HALF_GAP là 0.35m
-#define RADAR_HALF_GAP_M           0.35f
+#define RADAR_HALF_GAP_M           0.15f
 // Khoảng cách này được dùng để tạo "Phần lấn" ảo bằng phần mềm tại Receiver
 #define VIRTUAL_OVERLAP_M          0.30f
 #define BOUNDARY_HYST_M            0.30f
