@@ -31,12 +31,19 @@ static uint8_t receiverMAC[6] = {0x1C, 0xDB, 0xD4, 0x76, 0x7C, 0x90};
 #define RADAR_BUF_SIZE       4096
 #define MAX_PAYLOAD          240
 
+// ================= GLOBAL WATCHDOG =================
+static uint64_t last_valid_frame_time1 = 0; 
+static uint64_t last_valid_frame_time2 = 0;
+static bool is_system_resetting = false; // Flag chặn các task khác khi đang reset
+#define RADAR_TIMEOUT_MS 15000  // 15 giây không có data = Treo (tăng nhẹ để tránh reset nhầm khi không có người)
+
 // ================= HARD RESET PINS (bạn đã nối) =================
 #define RADAR1_RESET_GPIO    36  // RIGHT
 #define RADAR2_RESET_GPIO    37   // LEFT
 
 // Radar 1 (RIGHT) - Phân vùng nửa phải
 #define RADAR1_UART      UART_NUM_2
+
 #define RADAR1_RX_PIN    16
 #define RADAR1_TX_PIN    17
 #define RADAR1_TIME_MS   131
@@ -253,9 +260,20 @@ static int process_byte(uint8_t byte, uint8_t *buf, int *idx, uart_port_t port, 
 
     // === 4. Xử lý frame hợp lệ ===
     // (Dùng ESP_LOGD hoặc ESP_LOGI tùy cấu hình log level của bạn)
-    ESP_LOGI(TAG, "[%s FRAME] %lu bytes, %lu persons", 
-             radar_id_label(radar_id), pktLen, (pktLen-32)/32);
+    // ESP_LOGI(TAG, "[%s FRAME] %lu bytes, %lu persons", 
+    //          radar_id_label(radar_id), pktLen, (pktLen-32)/32);
 
+    // sendRadarFrame(buf, (int)pktLen, radar_id);
+
+    // Tìm đoạn cuối của hàm process_byte và thêm:
+    if (*idx < (int)pktLen) return 0; 
+
+    // --- CẬP NHẬT WATCHDOG TẠI ĐÂY ---
+    uint64_t now = esp_timer_get_time() / 1000;
+    if (radar_id == RADAR_ID_RIGHT) last_valid_frame_time1 = now;
+    else last_valid_frame_time2 = now;
+
+    ESP_LOGI(TAG, "[%s FRAME] %lu bytes", radar_id_label(radar_id), pktLen);
     sendRadarFrame(buf, (int)pktLen, radar_id);
 
     // Dọn buffer cho frame tiếp theo
@@ -489,7 +507,7 @@ static void radar_at_config(void) {
         "AT+HEIGHTD=45\n",
         "AT+YNegaD=-150\n",
         "AT+YPosiD=150\n",
-        "AT+DEBUG=3\n"
+        "AT+DEBUG=3\n"  
     };
     
     int config_count = sizeof(COMMON_CONFIG) / sizeof(COMMON_CONFIG[0]);
@@ -530,17 +548,51 @@ static void radar_at_config(void) {
     ESP_LOGI(TAG, "=== CONFIG DONE - RUNNING CONTINUOUSLY ===");
 }
 
+static void radar_watchdog_task(void *pv) {
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(2000)); 
+        if (is_system_resetting) continue;
 
+        uint64_t now = esp_timer_get_time() / 1000;
+        int target_radar = 0; // 1: Right, 2: Left, 3: Both
+
+        if (now - last_valid_frame_time1 > RADAR_TIMEOUT_MS) target_radar |= 1;
+        if (now - last_valid_frame_time2 > RADAR_TIMEOUT_MS) target_radar |= 2;
+
+        if (target_radar > 0) {
+            is_system_resetting = true;
+            ESP_LOGW(TAG, "Watchdog triggered for radar mask: %d", target_radar);
+            
+            if (target_radar & 1) {
+                hard_reset_radar(RADAR1_RESET_GPIO);
+                // Bạn nên tạo hàm radar_setup_right() riêng ở đây
+            }
+            if (target_radar & 2) {
+                hard_reset_radar(RADAR2_RESET_GPIO);
+            }
+            
+            radar_at_config(); // Tạm thời dùng lại hàm cũ của bạn
+            
+            last_valid_frame_time1 = last_valid_frame_time2 = esp_timer_get_time() / 1000;
+            is_system_resetting = false;
+        }
+    }
+}
 
 // ================= TDM SWITCH TASK (NEW) =================
 static void radar_tdm_task(void *pv) {
     ESP_LOGI(TAG, "=== TDM MODE STARTED: Alternate RIGHT/LEFT every 800ms ===");
 
     while (1) {
+
+        if (is_system_resetting) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
         // --- BẬT RIGHT ---
         uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
         ESP_LOGI(TAG, "→ TDM: START RIGHT");
-        vTaskDelay(pdMS_TO_TICKS(500));           // RIGHT hoạt động 800ms
+        vTaskDelay(pdMS_TO_TICKS(600));           // RIGHT hoạt động 800ms
 
         // --- TẮT RIGHT ---
         uart_write_bytes(RADAR1_UART, "AT+STOP\n", 8);
@@ -551,7 +603,7 @@ static void radar_tdm_task(void *pv) {
         // --- BẬT LEFT ---
         uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
         ESP_LOGI(TAG, "→ TDM: START LEFT");
-        vTaskDelay(pdMS_TO_TICKS(500));           // LEFT hoạt động 800ms
+        vTaskDelay(pdMS_TO_TICKS(600));           // LEFT hoạt động 800ms
 
         // --- TẮT LEFT ---
         uart_write_bytes(RADAR2_UART, "AT+STOP\n", 8);
@@ -590,6 +642,15 @@ void app_main(void) {
     xTaskCreate(radar2_task, "radar2", 4096, NULL, 6, NULL);
     xTaskCreate(espnow_tx_task, "espnow_tx", 4096, NULL, 7, NULL);
     xTaskCreate(radar_tdm_task, "tdm_switch", 4096, NULL, 5, NULL);
+
+    // Trong app_main, trước khi tạo task:
+    uint64_t startup_now = esp_timer_get_time() / 1000;
+    last_valid_frame_time1 = startup_now;
+    last_valid_frame_time2 = startup_now;
+
+
+    // Thêm dòng này vào cuối app_main
+    xTaskCreate(radar_watchdog_task, "watchdog", 3072, NULL, 4, NULL);
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 }
