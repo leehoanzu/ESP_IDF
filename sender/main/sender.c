@@ -193,39 +193,72 @@ static void send_at_production(uart_port_t port, const char *cmd, const char *wa
     }
 }
 
+// ================= HELPER FUNCTION =================
+static inline const char* radar_id_label(uint8_t id) {
+    return (id == RADAR_ID_RIGHT) ? "RIGHT" : "LEFT";
+}
 
-// ================= PROCESS BYTE =================
+// ================= PROCESS BYTE V3 =================
 static int process_byte(uint8_t byte, uint8_t *buf, int *idx, uart_port_t port, uint8_t radar_id) {
-    if (*idx >= RADAR_BUF_SIZE - 1) {
-        ESP_LOGE(TAG, "[%s] BUFFER OVERRUN → RESET PARSER", (radar_id == RADAR_ID_RIGHT ? "RIGHT" : "LEFT"));
+    if (*idx >= RADAR_BUF_SIZE) {
+        ESP_LOGE(TAG, "[%s] BUFFER FULL → HARD RESET PARSER", radar_id_label(radar_id));
         *idx = 0;
+        // Không return 0 ở đây để vẫn nạp byte hiện tại vào buffer mới
     }
+
     buf[(*idx)++] = byte;
 
-    if (*idx >= 8) {
-        bool hdr = (buf[0]==1 && buf[1]==2 && buf[2]==3 && buf[3]==4 &&
-                    buf[4]==5 && buf[5]==6 && buf[6]==7 && buf[7]==8);
-        if (!hdr) {
-            memmove(buf, buf + 1, *idx - 1);
-            (*idx)--;
-            return 0;
+    if (*idx < 8) return 0; // Chưa đủ chiều dài tối thiểu của Header
+
+    // === 1. Tìm Header (Chỉ đọc - Cực nhanh, O(N)) ===
+    int header_idx = -1;
+    // Tối ưu: Nếu 8 byte đầu đã là header, vòng lặp này break ngay lập tức ở i=0
+    for (int i = 0; i <= *idx - 8; i++) {
+        if (buf[i]==1 && buf[i+1]==2 && buf[i+2]==3 && buf[i+3]==4 &&
+            buf[i+4]==5 && buf[i+5]==6 && buf[i+6]==7 && buf[i+7]==8) {
+            header_idx = i;
+            break;
         }
-    } else return 0;
+    }
 
-    if (*idx < 12) return 0;
+    // === 2. Xử lý Rác (Chỉ dùng 1 lệnh memmove duy nhất) ===
+    if (header_idx > 0) {
+        // Có rác phía trước header
+        ESP_LOGW(TAG, "[%s] Dropping %d garbage bytes", radar_id_label(radar_id), header_idx);
+        memmove(buf, buf + header_idx, *idx - header_idx);
+        *idx -= header_idx;
+    } else if (header_idx == -1) {
+        // Toàn bộ buffer là rác, không có header -> Xóa hết, chỉ giữ lại 7 byte cuối
+        memmove(buf, buf + (*idx - 7), 7);
+        *idx = 7;
+        return 0;
+    }
 
-    uint32_t pktLen = (uint32_t)buf[8] | ((uint32_t)buf[9] << 8) |
-                      ((uint32_t)buf[10] << 16) | ((uint32_t)buf[11] << 24);
+    // Tại thời điểm này, chắc chắn buf[0] đến buf[7] là Header chuẩn.
+    
+    // === 3. Đọc Length & Xác thực ===
+    if (*idx < 12) return 0; // Chờ thêm dữ liệu để đọc Length
 
-    if (pktLen > RADAR_BUF_SIZE || pktLen < 12) { *idx = 0; return 0; }
+    uint32_t pktLen = (uint32_t)buf[8] | ((uint32_t)buf[9]<<8) |
+                      ((uint32_t)buf[10]<<16) | ((uint32_t)buf[11]<<24);
 
-    if (*idx < (int)pktLen) return 0;
+    // Xác thực độ dài: 32 bytes (0 người) đến 512 bytes (khoảng 14 người)
+    if (pktLen > 512 || pktLen < 32) {
+        ESP_LOGE(TAG, "[%s] INVALID LEN %lu → RESET", radar_id_label(radar_id), pktLen);
+        *idx = 0;
+        return 0;
+    }
 
-    // Chỉ bật log khi cần debug sâu để tránh nghẽn
-    ESP_LOGI(TAG, "[%s FRAME FULL] size=%lu bytes", (radar_id == RADAR_ID_RIGHT ? "RIGHT" : "LEFT"), pktLen);
+    if (*idx < (int)pktLen) return 0; // Chưa nhận đủ toàn bộ frame
+
+    // === 4. Xử lý frame hợp lệ ===
+    // (Dùng ESP_LOGD hoặc ESP_LOGI tùy cấu hình log level của bạn)
+    ESP_LOGI(TAG, "[%s FRAME] %lu bytes, %lu persons", 
+             radar_id_label(radar_id), pktLen, (pktLen-32)/32);
 
     sendRadarFrame(buf, (int)pktLen, radar_id);
 
+    // Dọn buffer cho frame tiếp theo
     memmove(buf, buf + pktLen, *idx - pktLen);
     *idx -= pktLen;
     return 1;
@@ -243,15 +276,18 @@ static void radar1_task(void *pv) {
         }
 
         uart_event_t event;
+        // Kiểm tra queue nhanh hơn
         if (xQueueReceive(uart_queue1, &event, pdMS_TO_TICKS(10))) {
             if (event.type == UART_DATA) {
-                uint8_t tmp[256];
-                size_t sz = event.size > 256 ? 256 : event.size;
+                // TĂNG KÍCH THƯỚC BUFFER ĐỌC LÊN 1024
+                uint8_t tmp[1024]; 
+                size_t sz = event.size > sizeof(tmp) ? sizeof(tmp) : event.size;
                 int rd = uart_read_bytes(RADAR1_UART, tmp, sz, 0);
                 for (int i = 0; i < rd; i++) {
                     process_byte(tmp[i], radarBuf1, &radarIdx1, RADAR1_UART, RADAR_ID_RIGHT);
                 }
             } else if (event.type == UART_FIFO_OVF || event.type == UART_BUFFER_FULL) {
+                ESP_LOGE(TAG, "[RIGHT RADAR] UART OVERFLOW OR BUFFER FULL!");
                 uart_flush_input(RADAR1_UART);
             }
         }
@@ -271,7 +307,8 @@ static void radar2_task(void *pv) {
         uart_event_t event;
         if (xQueueReceive(uart_queue2, &event, pdMS_TO_TICKS(10))) {
             if (event.type == UART_DATA) {
-                uint8_t tmp[256];
+                 // TĂNG KÍCH THƯỚC BUFFER ĐỌC LÊN 1024
+                uint8_t tmp[1024];
                 size_t sz = event.size > 256 ? 256 : event.size;
                 int rd = uart_read_bytes(RADAR2_UART, tmp, sz, 0);
                 for (int i = 0; i < rd; i++) {
@@ -293,7 +330,10 @@ static void uart_init_one(uart_port_t port, int tx, int rx, QueueHandle_t *queue
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE
     };
-    uart_driver_install(port, 4096, 4096, 20, queue, 0);
+    // uart_driver_install(port, 4096, 4096, 20, queue, 0);
+    // NÊN SỬA THÀNH:
+    uart_driver_install(port, 8192, 4096, 50, queue, 0);
+
     uart_param_config(port, &cfg);
     uart_set_pin(port, tx, rx, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
@@ -442,6 +482,7 @@ static void radar_at_config(void) {
     
     // Tăng SENS lên 5 để khôi phục độ nhạy
     const char* COMMON_CONFIG[] = {
+        "AT+MONTIME=1\n",
         "AT+SENS=5\n", 
         "AT+RANGE=100\n",
         "AT+HEIGHT=50\n",
@@ -451,7 +492,8 @@ static void radar_at_config(void) {
         "AT+DEBUG=3\n"
     };
     
-    for(int i=0; i<7; i++) {
+    int config_count = sizeof(COMMON_CONFIG) / sizeof(COMMON_CONFIG[0]);
+    for(int i=0; i < config_count; i++) {
         send_at_production(RADAR1_UART, COMMON_CONFIG[i], "OK", 2000);
         send_at_production(RADAR2_UART, COMMON_CONFIG[i], "OK", 2000);
     }
@@ -479,11 +521,11 @@ static void radar_at_config(void) {
     active_delay_and_drain(4000);
     send_at_production(RADAR2_UART, "AT+STOP\n", "OK", 2000);
 
-    ESP_LOGI(TAG, "=== PHASE 5: POWER UP CONTINUOUSLY ===");
-    // Khởi động lệch pha 1 giây để chống sập nguồn
-    uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
-    active_delay_and_drain(1000); 
-    uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
+    // ESP_LOGI(TAG, "=== PHASE 5: POWER UP CONTINUOUSLY ===");
+    // // Khởi động lệch pha 1 giây để chống sập nguồn
+    // uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
+    // active_delay_and_drain(1000); 
+    // uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
     
     ESP_LOGI(TAG, "=== CONFIG DONE - RUNNING CONTINUOUSLY ===");
 }
@@ -498,7 +540,7 @@ static void radar_tdm_task(void *pv) {
         // --- BẬT RIGHT ---
         uart_write_bytes(RADAR1_UART, "AT+START\n", 9);
         ESP_LOGI(TAG, "→ TDM: START RIGHT");
-        vTaskDelay(pdMS_TO_TICKS(800));           // RIGHT hoạt động 800ms
+        vTaskDelay(pdMS_TO_TICKS(500));           // RIGHT hoạt động 800ms
 
         // --- TẮT RIGHT ---
         uart_write_bytes(RADAR1_UART, "AT+STOP\n", 8);
@@ -509,7 +551,7 @@ static void radar_tdm_task(void *pv) {
         // --- BẬT LEFT ---
         uart_write_bytes(RADAR2_UART, "AT+START\n", 9);
         ESP_LOGI(TAG, "→ TDM: START LEFT");
-        vTaskDelay(pdMS_TO_TICKS(800));           // LEFT hoạt động 800ms
+        vTaskDelay(pdMS_TO_TICKS(500));           // LEFT hoạt động 800ms
 
         // --- TẮT LEFT ---
         uart_write_bytes(RADAR2_UART, "AT+STOP\n", 8);
