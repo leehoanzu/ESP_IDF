@@ -1,11 +1,3 @@
-
-
-/*
- * sender.c — Dual Radar Sender PRODUCTION v4.2
- * Fix: AT+START đặc biệt (không chờ OK, radar chuyển binary ngay)
- * Phân vùng cứng + Study non-blocking + Drain mạnh
- */
-
 #include <stdio.h>
 #include <string.h>
 #include "freertos/FreeRTOS.h"
@@ -153,7 +145,7 @@ static void hard_reset_radar(int gpio_num) {
     vTaskDelay(pdMS_TO_TICKS(1200));    // chờ module boot sạch (quan trọng!)
 }
 
-// ================= ANTI-POISONING (cải tiến) =================
+// ================= ANTI-POISONING (cải tiến) === ==============
 static void drain_uart(uart_port_t port) {
     uint8_t dump[256];
     int len;
@@ -504,13 +496,13 @@ static void apply_radar_params(uart_port_t port, uint8_t radar_id) {
 
     const char* COMMON_CONFIG[] = {
         "AT+MONTIME=1\n",
-        "AT+SENS=5\n", 
+        "AT+SENS=3\n", //5 
         "AT+RANGE=100\n",
-        "AT+HEIGHT=50\n",
-        "AT+HEIGHTD=45\n",
+        "AT+HEIGHT=250\n", //250  150
+        "AT+HEIGHTD=250\n", //245  150
         "AT+YNegaD=-150\n",
         "AT+YPosiD=150\n",
-        "AT+DEBUG=2\n"  // 2 test mode and 3 is operation mode
+        "AT+DEBUG=3\n"  // 2 test mode and 3 is operation mode
     };
     
     int config_count = sizeof(COMMON_CONFIG) / sizeof(COMMON_CONFIG[0]);
@@ -638,6 +630,8 @@ static void radar_tdm_task(void *pv) {
         }
     }
 }
+
+
 // ================= MAIN - QUAN TRỌNG NHẤT =================
 void app_main(void) {
     nvs_flash_init();
@@ -653,6 +647,7 @@ void app_main(void) {
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .pull_up_en = GPIO_PULLUP_DISABLE
     };
+    
     gpio_config(&io_conf);
     gpio_set_level(RADAR1_RESET_GPIO, 1);
     gpio_set_level(RADAR2_RESET_GPIO, 1);
@@ -679,3 +674,4 @@ void app_main(void) {
 
     while (1) vTaskDelay(pdMS_TO_TICKS(1000));
 }
+

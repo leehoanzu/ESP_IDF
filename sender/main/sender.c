@@ -503,8 +503,8 @@ static void radar_at_config(void) {
         "AT+MONTIME=1\n",
         "AT+SENS=5\n", 
         "AT+RANGE=100\n",
-        "AT+HEIGHT=50\n",
-        "AT+HEIGHTD=45\n",
+        "AT+HEIGHT=50\n",  //50
+        "AT+HEIGHTD=45\n", ///45
         "AT+YNegaD=-150\n",
         "AT+YPosiD=150\n",
         "AT+DEBUG=3\n"  

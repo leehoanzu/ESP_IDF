@@ -102,6 +102,20 @@ static float calibrate_x(float x_raw, uint8_t radar_id) {
     }
 }
 
+// /**
+//  * @brief Hiệu chuẩn tọa độ X từ Local sang Global với Virtual Overlap 0.3m
+//  * @param x_raw: Tọa độ X thô từ bản tin radar (float IEEE 754)
+//  * @param radar_id: ID của radar (LEFT hoặc RIGHT)
+//  * @return Tọa độ X đã hiệu chuẩn để thực hiện Merge
+//  */
+// static float calibrate_x(float x_raw, uint8_t radar_id) {
+//     // Tổng dịch chuyển = Khoảng cách vật lý (0.15) + Vùng chồng lấn ảo (0.30)
+//     const float shift = RADAR_HALF_GAP_M + VIRTUAL_OVERLAP_M;
+    
+//     // Radar RIGHT dịch sang TRÁI (âm), Radar LEFT dịch sang PHẢI (dương)
+//     return (radar_id == RADAR_ID_RIGHT) ? (x_raw - shift) : (x_raw + shift);
+// }
+
 static void track_reset(void) {
     memset(tracks, 0, sizeof(tracks));
     track_count = 0;

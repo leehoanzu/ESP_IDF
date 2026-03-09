@@ -1,7 +1,7 @@
 {
     "version":            "1.2",
     "project_name":       "radarreceiver",
-    "project_version":    "1",
+    "project_version":    "e14662d-dirty",
     "project_path":       "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/radarreceiver",
     "idf_path":           "C:/Users/lehoa/esp/v5.5.2/esp-idf",
     "build_dir":          "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/radarreceiver/build",
@@ -1225,7 +1225,7 @@
             "managed_reqs": [],
             "managed_priv_reqs": [],
             "file": "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/radarreceiver/build/esp-idf/main/libmain.a",
-            "sources": [ "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/radarreceiver/main/radarreceiver.c" ],
+            "sources": [ "D:/HOC/ESP32/Stimulate/Radar/ESP_IDF/radarreceiver/main/multi_receiver.c" ],
             "include_dirs": [ "." ]
         },
         "mbedtls": {

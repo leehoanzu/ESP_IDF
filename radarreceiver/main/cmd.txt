@@ -1,0 +1,31 @@
+📋 Phần 1: Bảng Tập Lệnh Chuẩn (Dùng để Copy & Paste)
+Bạn có thể lưu danh sách này vào Notepad. Khi cần đổi thông số, chỉ việc bôi đen, copy và paste thẳng vào Terminal (nhớ ấn Enter). Đảm bảo không copy dính khoảng trắng ở đầu dòng.
+
+1. Điều chỉnh Bán kính quét (RANGE) - Đơn vị: cm
+
+    ALL:AT+RANGE=250 (Chỉnh toàn bộ 3 Zone quét xa 2.5 mét)
+
+    Z1:AT+RANGE=300 (Chỉ chỉnh riêng Zone 1 quét 3.0 mét)
+
+    Z2:AT+RANGE=150 (Thu hẹp Zone 2 còn 1.5 mét)
+
+2. Điều chỉnh Độ nhạy (SENSITIVITY) - Mức 0 đến 3 (3 là nhạy nhất)
+
+    ALL:AT+SENS=3 (Tăng tối đa độ nhạy cho mọi Zone để bắt người đứng im tốt hơn)
+
+    ALL:AT+SENS=2 (Giảm độ nhạy chung nếu thấy radar bắt dính quạt trần/rèm cửa)
+
+    Z3:AT+SENS=1 (Giảm nhạy riêng khu vực Zone 3)
+
+3. Điều chỉnh Thời gian giữ mục tiêu (TIME) - Đơn vị: giây
+(Nếu người ra khỏi vùng quét, sau bao lâu radar mới báo mất người?)
+
+    ALL:AT+TIME=101 (Giữ 1 giây - Handoff cực nhanh giữa các Zone)
+
+    ALL:AT+TIME=105 (Giữ 5 giây - Chống mất dấu khi người đứng yên quá lâu)
+
+4. Khởi động lại & Lưu cấu hình vĩnh viễn (QUAN TRỌNG)
+
+    ALL:AT+RESTORE (Lưu cứng mọi thông số vừa cấu hình vào Flash của 6 radar. Mất điện không bị mất cấu hình).
+
+    ALL:AT+RESET (Khởi động lại toàn bộ radar. Radar sẽ quét lại môi trường).
